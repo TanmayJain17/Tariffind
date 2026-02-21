@@ -17,6 +17,12 @@ Env vars needed:
   SERPAPI_KEY        — SerpAPI for Google Shopping search
 """
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()  # Loads .env file automatically
+except ImportError:
+    pass
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -25,6 +31,8 @@ from typing import Optional
 from tariff_engine import lookup_tariff, CATEGORY_LABELS
 from product_classifier import _fallback_classify, classify_product_sync
 from product_search import search_products, search_alternatives
+from price_history import estimate_price_history
+from url_scraper import is_product_url, extract_product_from_url
 
 app = FastAPI(
     title="Tariffind API",
@@ -72,6 +80,13 @@ class DirectLookupRequest(BaseModel):
     hts_code: str
     country: str = "CN"
     price: Optional[float] = None
+
+
+class PriceHistoryRequest(BaseModel):
+    product_name: str = Field(..., description="Product name")
+    current_price: float = Field(..., description="Current retail price")
+    country_of_origin: str = Field("China", description="Country of origin")
+    category: str = Field("", description="Product category")
 
 
 # ─────────────────────────────────────────────
@@ -182,24 +197,56 @@ def analyze(req: AnalyzeRequest):
 def full_pipeline(req: FullPipelineRequest):
     """
     THE MAIN ENDPOINT — Full user flow in one call:
-    1. Search Google Shopping for real products
-    2. Classify the top result
-    3. Calculate tariff breakdown
-    4. Find lower-tariff alternatives
+    1. Detect if input is a URL or search query
+    2. Search Google Shopping / extract from URL
+    3. Classify the product
+    4. Calculate tariff breakdown
+    5. Find lower-tariff alternatives
+    6. Estimate price history
     """
-    # Step 1: Search
-    try:
-        products = search_products(req.query, num_results=6)
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Product search failed: {e}")
+    query = req.query.strip()
 
-    if not products:
-        raise HTTPException(status_code=404, detail="No products found")
+    # Step 1: Detect URL vs search query
+    if is_product_url(query):
+        # Extract product info from URL
+        url_data = extract_product_from_url(query)
+        product_name = url_data.get("product_name") or query
+        price = url_data.get("price")
 
-    # Step 2: Classify top result
-    top_product = products[0]
-    product_name = top_product.get("title", req.query)
-    price = top_product.get("price")
+        top_product = {
+            "title": product_name,
+            "price": price,
+            "price_str": url_data.get("price_str") or (f"${price:.2f}" if price else ""),
+            "source": url_data.get("store", ""),
+            "link": query,
+            "product_link": query,
+            "thumbnail": url_data.get("thumbnail", ""),
+            "rating": None,
+            "reviews": None,
+            "delivery": "",
+        }
+        # Also search for more results
+        try:
+            products = search_products(product_name, num_results=5)
+        except Exception:
+            products = []
+        products = [top_product] + products
+
+        search_query = product_name  # For alternatives search
+    else:
+        # Regular text search
+        search_query = query
+        try:
+            products = search_products(query, num_results=6)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Product search failed: {e}")
+
+        if not products:
+            raise HTTPException(status_code=404, detail="No products found")
+
+        top_product = products[0]
+        product_name = top_product.get("title", query)
+        price = top_product.get("price")
 
     classification = _classify(product_name, req.use_ai)
     if not classification or "hts_code" not in classification:
@@ -211,13 +258,25 @@ def full_pipeline(req: FullPipelineRequest):
     # Step 4: Alternatives
     try:
         alternatives = search_alternatives(
-            req.query,
+            search_query,
             category=classification.get("category", ""),
             num_results=req.num_alternatives,
         )
     except Exception as e:
         print(f"[Tariffind] Alternative search failed: {e}")
         alternatives = []
+
+    # Step 5: Estimated price history
+    try:
+        price_history_data = estimate_price_history(
+            product_name,
+            price or 0,
+            classification.get("country_of_origin", "Unknown"),
+            classification.get("category", ""),
+        )
+    except Exception as e:
+        print(f"[Tariffind] Price history failed: {e}")
+        price_history_data = None
 
     return {
         "query": req.query,
@@ -227,6 +286,7 @@ def full_pipeline(req: FullPipelineRequest):
         "tariff": tariff_response["tariff"],
         "price_impact": tariff_response["price_impact"],
         "alternatives": alternatives,
+        "price_history": price_history_data,
         "scotus_note": (
             "SCOTUS struck down broad IEEPA tariffs on Feb 20, 2026. "
             "Section 301, 232, IEEPA fentanyl, and new Section 122 (10% blanket) remain."
@@ -253,6 +313,21 @@ def get_alternatives(req: AlternativesRequest):
         "alternatives_count": len(alternatives),
         "alternatives": alternatives,
     }
+
+
+@app.post("/price-history")
+def price_history(req: PriceHistoryRequest):
+    """Get AI-estimated price history with tariff policy annotations."""
+    try:
+        history = estimate_price_history(
+            req.product_name,
+            req.current_price,
+            req.country_of_origin,
+            req.category,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Price history failed: {e}")
+    return history
 
 
 @app.post("/lookup")
