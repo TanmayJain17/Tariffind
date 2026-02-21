@@ -7,11 +7,13 @@ Also finds lower-tariff alternatives.
 Requires: SERPAPI_KEY env var or pass api_key directly.
 Free tier: 100 searches/month (plenty for hackathon demo).
 """
-
 import os
 import json
 import requests
 from typing import Optional
+from dotenv import load_dotenv
+
+load_dotenv()
 
 SERPAPI_BASE = "https://serpapi.com/search.json"
 

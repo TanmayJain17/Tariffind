@@ -16,6 +16,10 @@ Env vars needed:
   ANTHROPIC_API_KEY  — Claude API for classification
   SERPAPI_KEY        — SerpAPI for Google Shopping search
 """
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware

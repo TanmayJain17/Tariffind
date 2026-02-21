@@ -11,6 +11,9 @@ for the Claude Agent SDK sponsor prize.
 import json
 import os
 import re
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # You'll need: pip install anthropic
 # Set ANTHROPIC_API_KEY env var or pass directly
