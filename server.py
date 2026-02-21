@@ -1,20 +1,26 @@
 """
 Tariffind API Server (v2)
 ============================
-Full pipeline: search real products → classify → tariff breakdown → alternatives.
+Thin routing layer — all logic lives in dedicated modules.
+
+Modules:
+  tariff_engine.py      — HTS CSV lookup + tariff calculation
+  product_classifier.py — Claude AI + fallback product classification
+  product_search.py     — SerpAPI Google Shopping search + alternatives
+  price_history.py      — AI-estimated price timeline with tariff annotations
+  url_scraper.py        — Extract product info from Amazon/Walmart/BestBuy URLs
+  dashboard.py          — Tariff Tax Dashboard (Spotify Wrapped for tariffs)
 
 Endpoints:
   POST /search          — Search Google Shopping for real products
   POST /analyze         — Classify + tariff breakdown for a specific product
-  POST /full-pipeline   — One-shot: search → pick top result → classify → tariff → alternatives
-  POST /alternatives    — Find lower-tariff alternatives for a product
-  POST /lookup          — Direct HTS code lookup (skip classification)
+  POST /full-pipeline   — One-shot: input → search → classify → tariff → alternatives → history
+  POST /alternatives    — Find lower-tariff alternatives
+  POST /dashboard       — Tariff Tax Dashboard from purchase list
+  POST /price-history   — AI-estimated price history with tariff annotations
+  POST /lookup          — Direct HTS code lookup
   GET  /categories      — List supported categories
   GET  /health          — Health check
-
-Env vars needed:
-  ANTHROPIC_API_KEY  — Claude API for classification
-  SERPAPI_KEY        — SerpAPI for Google Shopping search
 """
 import os
 from dotenv import load_dotenv
@@ -23,7 +29,7 @@ load_dotenv()
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()  # Loads .env file automatically
+    load_dotenv()
 except ImportError:
     pass
 
@@ -32,11 +38,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional
 
+# ── Module imports ──
 from tariff_engine import lookup_tariff, CATEGORY_LABELS
 from product_classifier import _fallback_classify, classify_product_sync
 from product_search import search_products, search_alternatives
 from price_history import estimate_price_history
 from url_scraper import is_product_url, extract_product_from_url
+from dashboard import build_price_impact, generate_dashboard, get_passthrough_rate
+
 
 app = FastAPI(
     title="Tariffind API",
@@ -54,7 +63,7 @@ app.add_middleware(
 
 
 # ─────────────────────────────────────────────
-# REQUEST / RESPONSE MODELS
+# REQUEST MODELS
 # ─────────────────────────────────────────────
 
 class SearchRequest(BaseModel):
@@ -69,7 +78,7 @@ class AnalyzeRequest(BaseModel):
 
 
 class FullPipelineRequest(BaseModel):
-    query: str = Field(..., description="Product search query")
+    query: str = Field(..., description="Product search query OR product URL")
     use_ai: bool = Field(True, description="Use Claude API for classification")
     num_alternatives: int = Field(4, description="Number of alternatives to find")
 
@@ -80,10 +89,11 @@ class AlternativesRequest(BaseModel):
     num_results: int = Field(5, description="Number of alternatives")
 
 
-class DirectLookupRequest(BaseModel):
-    hts_code: str
-    country: str = "CN"
-    price: Optional[float] = None
+class DashboardRequest(BaseModel):
+    purchases: list[dict] = Field(
+        ...,
+        description="List of purchases: [{product, price, country_of_origin (optional)}]",
+    )
 
 
 class PriceHistoryRequest(BaseModel):
@@ -93,11 +103,18 @@ class PriceHistoryRequest(BaseModel):
     category: str = Field("", description="Product category")
 
 
+class DirectLookupRequest(BaseModel):
+    hts_code: str
+    country: str = "CN"
+    price: Optional[float] = None
+
+
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
 
 def _classify(product_name: str, use_ai: bool = True) -> dict:
+    """Classify product with AI or fallback."""
     if use_ai:
         try:
             return classify_product_sync(product_name)
@@ -108,6 +125,7 @@ def _classify(product_name: str, use_ai: bool = True) -> dict:
 
 
 def _build_tariff_response(classification: dict, price: float = None) -> dict:
+    """Classify → tariff lookup → price impact with pass-through adjustment."""
     result = lookup_tariff(
         classification["hts_code"],
         classification.get("country_of_origin", "CN")
@@ -130,17 +148,15 @@ def _build_tariff_response(classification: dict, price: float = None) -> dict:
         "total_pct": result.total_pct,
         "breakdown": result.breakdown,
         "raw_rate_string": result.raw_rate_string,
+        "consumer_passthrough_rate": get_passthrough_rate(result.category),
     }
 
     price_impact = None
     if price and price > 0:
-        tariff_cost = result.tariff_on_price(price)
-        price_impact = {
-            "retail_price": price,
-            "estimated_tariff_cost": round(tariff_cost, 2),
-            "price_without_tariff": round(price - tariff_cost, 2),
-            "tariff_share_of_price": f"{(tariff_cost / price) * 100:.1f}%",
-        }
+        raw_tariff_cost = result.tariff_on_price(price)
+        price_impact = build_price_impact(
+            price, raw_tariff_cost, result.category, result.category_label
+        )
 
     return {
         "classification": classification,
@@ -160,7 +176,7 @@ def health():
         "service": "Tariffind API",
         "version": "0.2.0",
         "tariff_data": "Post-SCOTUS Feb 20, 2026",
-        "features": ["search", "classify", "tariff", "alternatives"],
+        "features": ["search", "classify", "tariff", "alternatives", "price_history", "dashboard"],
     }
 
 
@@ -173,12 +189,7 @@ def search(req: SearchRequest):
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Search failed: {e}")
-
-    return {
-        "query": req.query,
-        "results_count": len(products),
-        "products": products,
-    }
+    return {"query": req.query, "results_count": len(products), "products": products}
 
 
 @app.post("/analyze")
@@ -187,32 +198,25 @@ def analyze(req: AnalyzeRequest):
     classification = _classify(req.product, req.use_ai)
     if not classification or "hts_code" not in classification:
         raise HTTPException(status_code=422, detail="Could not classify product")
-
     response = _build_tariff_response(classification, req.price)
     response["product_input"] = req.product
-    response["scotus_note"] = (
-        "SCOTUS struck down broad IEEPA tariffs on Feb 20, 2026. "
-        "Section 301, 232, IEEPA fentanyl, and new Section 122 (10% blanket) remain."
-    )
     return response
 
 
 @app.post("/full-pipeline")
 def full_pipeline(req: FullPipelineRequest):
     """
-    THE MAIN ENDPOINT — Full user flow in one call:
-    1. Detect if input is a URL or search query
-    2. Search Google Shopping / extract from URL
-    3. Classify the product
-    4. Calculate tariff breakdown
-    5. Find lower-tariff alternatives
-    6. Estimate price history
+    THE MAIN ENDPOINT — accepts text search OR product URL:
+    1. Detect URL vs search query
+    2. Search / extract product info
+    3. Classify → tariff breakdown
+    4. Find lower-tariff alternatives
+    5. Estimate price history
     """
     query = req.query.strip()
 
-    # Step 1: Detect URL vs search query
+    # Step 1: URL vs text
     if is_product_url(query):
-        # Extract product info from URL
         url_data = extract_product_from_url(query)
         product_name = url_data.get("product_name") or query
         price = url_data.get("price")
@@ -225,33 +229,26 @@ def full_pipeline(req: FullPipelineRequest):
             "link": query,
             "product_link": query,
             "thumbnail": url_data.get("thumbnail", ""),
-            "rating": None,
-            "reviews": None,
-            "delivery": "",
         }
-        # Also search for more results
         try:
             products = search_products(product_name, num_results=5)
         except Exception:
             products = []
         products = [top_product] + products
-
-        search_query = product_name  # For alternatives search
+        search_query = product_name
     else:
-        # Regular text search
         search_query = query
         try:
             products = search_products(query, num_results=6)
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"Product search failed: {e}")
-
         if not products:
             raise HTTPException(status_code=404, detail="No products found")
-
         top_product = products[0]
         product_name = top_product.get("title", query)
         price = top_product.get("price")
 
+    # Step 2: Classify
     classification = _classify(product_name, req.use_ai)
     if not classification or "hts_code" not in classification:
         raise HTTPException(status_code=422, detail="Could not classify product")
@@ -270,7 +267,7 @@ def full_pipeline(req: FullPipelineRequest):
         print(f"[Tariffind] Alternative search failed: {e}")
         alternatives = []
 
-    # Step 5: Estimated price history
+    # Step 5: Price history
     try:
         price_history_data = estimate_price_history(
             product_name,
@@ -291,10 +288,6 @@ def full_pipeline(req: FullPipelineRequest):
         "price_impact": tariff_response["price_impact"],
         "alternatives": alternatives,
         "price_history": price_history_data,
-        "scotus_note": (
-            "SCOTUS struck down broad IEEPA tariffs on Feb 20, 2026. "
-            "Section 301, 232, IEEPA fentanyl, and new Section 122 (10% blanket) remain."
-        ),
     }
 
 
@@ -303,20 +296,46 @@ def get_alternatives(req: AlternativesRequest):
     """Find lower-tariff alternative products."""
     try:
         alternatives = search_alternatives(
-            req.product_name,
-            category=req.category,
-            num_results=req.num_results,
+            req.product_name, category=req.category, num_results=req.num_results,
         )
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Alternative search failed: {e}")
+    return {"product_name": req.product_name, "alternatives_count": len(alternatives), "alternatives": alternatives}
 
-    return {
-        "product_name": req.product_name,
-        "alternatives_count": len(alternatives),
-        "alternatives": alternatives,
-    }
+
+@app.post("/dashboard")
+def tariff_tax_dashboard(req: DashboardRequest):
+    """
+    TARIFF TAX DASHBOARD — The "Spotify Wrapped" for tariffs.
+    Submit purchases → total tariff tax, category breakdown, shareable card.
+    """
+    items = []
+    for purchase in req.purchases:
+        product_name = purchase.get("product", "Unknown")
+        price = purchase.get("price", 0)
+        if not price or price <= 0:
+            continue
+
+        classification = _classify(product_name, use_ai=True)
+        if not classification or "hts_code" not in classification:
+            continue
+
+        tariff_data = _build_tariff_response(classification, price)
+        impact = tariff_data.get("price_impact")
+        tariff_you_pay = impact["estimated_tariff_you_pay"] if impact else 0
+
+        items.append({
+            "product": product_name,
+            "price": price,
+            "tariff_you_pay": tariff_you_pay,
+            "tariff_rate": tariff_data["tariff"]["total_pct"],
+            "country": tariff_data["tariff"]["country_name"],
+            "category": tariff_data["tariff"]["category_label"],
+        })
+
+    return generate_dashboard(items)
 
 
 @app.post("/price-history")
@@ -324,10 +343,7 @@ def price_history(req: PriceHistoryRequest):
     """Get AI-estimated price history with tariff policy annotations."""
     try:
         history = estimate_price_history(
-            req.product_name,
-            req.current_price,
-            req.country_of_origin,
-            req.category,
+            req.product_name, req.current_price, req.country_of_origin, req.category,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Price history failed: {e}")
@@ -340,12 +356,10 @@ def direct_lookup(req: DirectLookupRequest):
     result = lookup_tariff(req.hts_code, req.country)
     response = result.to_dict()
     if req.price and req.price > 0:
-        tariff_cost = result.tariff_on_price(req.price)
-        response["price_impact"] = {
-            "retail_price": req.price,
-            "estimated_tariff_cost": round(tariff_cost, 2),
-            "price_without_tariff": round(req.price - tariff_cost, 2),
-        }
+        raw_tariff_cost = result.tariff_on_price(req.price)
+        response["price_impact"] = build_price_impact(
+            req.price, raw_tariff_cost, result.category, result.category_label
+        )
     return response
 
 
@@ -358,6 +372,6 @@ if __name__ == "__main__":
     import uvicorn
     print("=" * 50)
     print("  Tariffind API v0.2.0")
-    print("  http://localhost:8000/docs for Swagger UI")
+    print("  http://localhost:8000/docs")
     print("=" * 50)
     uvicorn.run(app, host="0.0.0.0", port=8000)
