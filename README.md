@@ -20,6 +20,12 @@
   <a href="#getting-started">Getting Started</a>
 </p>
 
+## Landing Page Preview
+
+<p align="center">
+  <img src="frontend/images/landing-page.png" alt="TariffShield landing page preview" width="100%" />
+</p>
+
 ---
 
 ## Live Demo
@@ -60,6 +66,11 @@ Drop an Amazon, Walmart, or Best Buy link → TariffShield extracts the product,
 ### 3. 📸 Screenshot Any Cart
 Upload a screenshot of your shopping cart → Claude Vision reads every item and price, classifies each product, calculates the total hidden tariff across your entire cart, and suggests **smart swaps** for the top 3 highest-tariff items to maximize your savings.
 
+<p align="center">
+  <img src="frontend/images/cart-image.png" alt="TariffShield landing page preview" width="100%" />
+</p>
+
+
 ---
 
 ## Features
@@ -70,8 +81,17 @@ Every product gets a full breakdown: MFN base rate, Section 301, Section 232, IE
 ### Smart Alternatives
 Not just keyword matching — every suggested alternative runs through the **full classification + tariff pipeline** and is filtered by a composite score (60% price savings, 40% tariff savings). You only see alternatives that are genuinely better.
 
+<p align="center">
+  <img src="frontend/images/suggestions.png" alt="Smart Suggestions" width="100%" />
+</p>
+
+
 ### Cart Analyzer with Smart Swaps
 Upload a cart screenshot and get instant analysis. TariffShield ranks items by **dollar impact** (not just tariff rate), identifies the top 3 worst offenders, and finds validated alternatives for each. A $500 TV with 10% tariff gets flagged before a $5 item with 50% tariff — because that's what actually saves you money.
+<p align="center">
+  <img src="frontend/images/cart-report.png" alt="Cart Report" width="100%" />
+</p>
+
 
 ### Tariff Wrapped Dashboard
 A Spotify Wrapped–style personal tariff report: total tariff tax you've paid, breakdown by category and country, your highest-tariff purchase, and a shareable headline card.
