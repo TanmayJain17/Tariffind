@@ -1,5 +1,5 @@
 """
-Tariffind — Product URL Scraper
+TariffShield — Product URL Scraper
 ====================================
 Paste an Amazon, Walmart, or Best Buy URL → extract product name, price, store.
 Uses SerpAPI's Google Shopping reverse lookup or direct page scraping.
@@ -153,7 +153,7 @@ def _extract_with_claude(url: str, api_key: str = None) -> Optional[dict]:
         return json.loads(text)
 
     except Exception as e:
-        print(f"[Tariffind] Claude URL extraction failed: {e}")
+        print(f"[TariffShield] Claude URL extraction failed: {e}")
         return None
 
 
@@ -192,7 +192,7 @@ def _search_product_by_name(product_name: str, api_key: str = None) -> Optional[
                 "thumbnail": top.get("thumbnail", ""),
             }
     except Exception as e:
-        print(f"[Tariffind] SerpAPI product lookup failed: {e}")
+        print(f"[TariffShield] SerpAPI product lookup failed: {e}")
 
     return None
 

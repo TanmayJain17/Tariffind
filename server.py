@@ -1,5 +1,5 @@
 """
-Tariffind API Server (v2)
+TariffShield API Server (v2)
 ============================
 Thin routing layer — all logic lives in dedicated modules.
 
@@ -10,12 +10,14 @@ Modules:
   price_history.py      — AI-estimated price timeline with tariff annotations
   url_scraper.py        — Extract product info from Amazon/Walmart/BestBuy URLs
   dashboard.py          — Tariff Tax Dashboard (Spotify Wrapped for tariffs)
+  cart_analyzer.py      — Shopping cart screenshot → per-item tariff analysis
 
 Endpoints:
   POST /search          — Search Google Shopping for real products
   POST /analyze         — Classify + tariff breakdown for a specific product
   POST /full-pipeline   — One-shot: input → search → classify → tariff → alternatives → history
   POST /alternatives    — Find lower-tariff alternatives
+  POST /cart-analyze    — Upload cart screenshot → extract items → total tariff exposure
   POST /dashboard       — Tariff Tax Dashboard from purchase list
   POST /price-history   — AI-estimated price history with tariff annotations
   POST /lookup          — Direct HTS code lookup
@@ -41,14 +43,15 @@ from typing import Optional
 # ── Module imports ──
 from tariff_engine import lookup_tariff, CATEGORY_LABELS
 from product_classifier import _fallback_classify, classify_product_sync
-from product_search import search_products, search_alternatives
+from product_search import search_products, search_alternatives, enrich_and_filter_alternatives
 from price_history import estimate_price_history
 from url_scraper import is_product_url, extract_product_from_url
 from dashboard import build_price_impact, generate_dashboard, get_passthrough_rate
+from cart_analyzer import analyze_cart
 
 
 app = FastAPI(
-    title="Tariffind API",
+    title="TariffShield API",
     description="See the invisible tax. Real products, real tariff breakdowns, real alternatives.",
     version="0.2.0",
 )
@@ -109,6 +112,14 @@ class DirectLookupRequest(BaseModel):
     price: Optional[float] = None
 
 
+class CartAnalyzeRequest(BaseModel):
+    image_data: str = Field(..., description="Base64-encoded cart screenshot")
+    media_type: str = Field("image/png", description="Image MIME type (image/png, image/jpeg, image/webp)")
+    use_ai: bool = Field(True, description="Use Claude for product classification")
+    max_swap_suggestions: int = Field(3, description="Number of high-tariff items to find swaps for")
+    alts_per_swap: int = Field(2, description="Number of alternatives per swap suggestion")
+
+
 # ─────────────────────────────────────────────
 # HELPERS
 # ─────────────────────────────────────────────
@@ -119,7 +130,7 @@ def _classify(product_name: str, use_ai: bool = True) -> dict:
         try:
             return classify_product_sync(product_name)
         except Exception as e:
-            print(f"[Tariffind] AI classification failed, using fallback: {e}")
+            print(f"[TariffShield] AI classification failed, using fallback: {e}")
             return _fallback_classify(product_name)
     return _fallback_classify(product_name)
 
@@ -173,10 +184,10 @@ def _build_tariff_response(classification: dict, price: float = None) -> dict:
 def health():
     return {
         "status": "ok",
-        "service": "Tariffind API",
+        "service": "TariffShield API",
         "version": "0.2.0",
         "tariff_data": "Post-SCOTUS Feb 20, 2026",
-        "features": ["search", "classify", "tariff", "alternatives", "price_history", "dashboard"],
+        "features": ["search", "classify", "tariff", "alternatives", "price_history", "dashboard", "cart_analyze"],
     }
 
 
@@ -210,7 +221,7 @@ def full_pipeline(req: FullPipelineRequest):
     1. Detect URL vs search query
     2. Search / extract product info
     3. Classify → tariff breakdown
-    4. Find lower-tariff alternatives
+    4. Find lower-tariff alternatives (NOW with price + tariff filtering!)
     5. Estimate price history
     """
     query = req.query.strip()
@@ -256,15 +267,36 @@ def full_pipeline(req: FullPipelineRequest):
     # Step 3: Tariff breakdown
     tariff_response = _build_tariff_response(classification, price)
 
-    # Step 4: Alternatives
+    # Step 4: Alternatives — NOW with actual tariff + price validation!
     try:
-        alternatives = search_alternatives(
+        # Fetch extra candidates since filtering will remove some
+        raw_alternatives = search_alternatives(
             search_query,
             category=classification.get("category", ""),
-            num_results=req.num_alternatives,
+            num_results=req.num_alternatives + 4,
         )
+
+        original_tariff_rate = tariff_response["tariff"]["total_rate"]
+        original_price = price or 0
+
+        if original_price > 0 and original_tariff_rate > 0:
+            # Enrich each alternative with real tariff data,
+            # filter out those that aren't cheaper OR lower-tariff
+            alternatives = enrich_and_filter_alternatives(
+                alternatives=raw_alternatives,
+                original_price=original_price,
+                original_tariff_rate=original_tariff_rate,
+                classify_fn=_classify,
+                use_ai=req.use_ai,
+            )
+            # Cap to requested number after filtering
+            alternatives = alternatives[:req.num_alternatives]
+        else:
+            # If we don't have price/tariff to compare against, return raw
+            alternatives = raw_alternatives[:req.num_alternatives]
+
     except Exception as e:
-        print(f"[Tariffind] Alternative search failed: {e}")
+        print(f"[TariffShield] Alternative search/filter failed: {e}")
         alternatives = []
 
     # Step 5: Price history
@@ -276,7 +308,7 @@ def full_pipeline(req: FullPipelineRequest):
             classification.get("category", ""),
         )
     except Exception as e:
-        print(f"[Tariffind] Price history failed: {e}")
+        print(f"[TariffShield] Price history failed: {e}")
         price_history_data = None
 
     return {
@@ -368,10 +400,46 @@ def list_categories():
     return {"categories": CATEGORY_LABELS}
 
 
+@app.post("/cart-analyze")
+def cart_analyze(req: CartAnalyzeRequest):
+    """
+    CART TARIFF ANALYZER — Upload a shopping cart screenshot.
+    Claude Vision extracts every item, then each gets classified + tariff breakdown.
+    Returns per-item analysis, aggregate cart tariff summary, and smart swap
+    suggestions for the highest-tariff items with cheaper/lower-tariff alternatives.
+    """
+    if not req.image_data:
+        raise HTTPException(status_code=400, detail="No image data provided")
+
+    # Validate media type
+    allowed_types = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+    if req.media_type not in allowed_types:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported media type. Use one of: {', '.join(allowed_types)}",
+        )
+
+    try:
+        result = analyze_cart(
+            image_data=req.image_data,
+            media_type=req.media_type,
+            classify_fn=_classify,
+            use_ai=req.use_ai,
+            max_swap_suggestions=req.max_swap_suggestions,
+            alts_per_swap=req.alts_per_swap,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Cart analysis failed: {e}")
+
+    return result
+
+
 if __name__ == "__main__":
     import uvicorn
     print("=" * 50)
-    print("  Tariffind API v0.2.0")
+    print("  TariffShield API v0.2.0")
     print("  http://localhost:8000/docs")
     print("=" * 50)
     uvicorn.run(app, host="0.0.0.0", port=8000)

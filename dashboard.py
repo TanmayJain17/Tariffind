@@ -1,5 +1,5 @@
 """
-Tariffind — Tariff Tax Dashboard
+TariffShield — Tariff Tax Dashboard
 =====================================
 The "Spotify Wrapped" for tariffs.
 User submits purchases → calculates total tariff tax paid,
@@ -113,7 +113,7 @@ def generate_dashboard(items: list[dict]) -> dict:
                 f"That's {(total_tariff / total_spent * 100):.1f}% of my spending "
                 f"going to tariffs" if total_spent > 0 else ""
             ),
-            "cta": "See your tariff tax → Tariffind.app",
+            "cta": "See your tariff tax → TariffShield.app",
         },
     }
 

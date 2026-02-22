@@ -1,5 +1,5 @@
 """
-Tariffind — AI Price History Estimator
+TariffShield — AI Price History Estimator
 ==========================================
 Uses Claude to generate estimated price history for consumer products,
 annotated with tariff policy events that caused price changes.
@@ -14,7 +14,7 @@ import anthropic
 from typing import Optional
 
 
-PRICE_HISTORY_PROMPT = """You are a consumer price analyst for a tariff transparency app called Tariffind.
+PRICE_HISTORY_PROMPT = """You are a consumer price analyst for a tariff transparency app called TariffShield.
 
 Given a product, its current retail price, and its country of origin, generate an estimated price history timeline showing how the price likely changed due to US tariff policies.
 
@@ -91,10 +91,10 @@ def estimate_price_history(product_name: str, current_price: float,
         return data
 
     except json.JSONDecodeError as e:
-        print(f"[Tariffind] Failed to parse Claude price history response: {e}")
+        print(f"[TariffShield] Failed to parse Claude price history response: {e}")
         return _fallback_price_history(product_name, current_price, country_of_origin)
     except Exception as e:
-        print(f"[Tariffind] Claude price history failed: {e}")
+        print(f"[TariffShield] Claude price history failed: {e}")
         return _fallback_price_history(product_name, current_price, country_of_origin)
 
 

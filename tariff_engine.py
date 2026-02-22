@@ -1,5 +1,5 @@
 """
-Tariffind — Tariff Intelligence Engine (CSV-Backed)
+TariffShield — Tariff Intelligence Engine (CSV-Backed)
 ======================================================
 Loads the real USITC HTS 2026 Revision 3 CSV for full product coverage.
 Layers on surcharges: Section 301, Section 232, IEEPA fentanyl, Section 122.
@@ -45,7 +45,7 @@ def load_hts_csv(csv_path: str = None) -> pd.DataFrame:
     df = df[df["HTS Number"] != ""].copy()
 
     _hts_df = df
-    print(f"[Tariffind] Loaded {len(df):,} HTS entries from CSV.")
+    print(f"[TariffShield] Loaded {len(df):,} HTS entries from CSV.")
     return df
 
 
@@ -366,7 +366,7 @@ if __name__ == "__main__":
     csv_path = sys.argv[1] if len(sys.argv) > 1 else None
 
     print("=" * 60)
-    print("  Tariffind Tariff Engine — CSV-Backed (Full Coverage)")
+    print("  TariffShield Tariff Engine — CSV-Backed (Full Coverage)")
     print("  Post-SCOTUS ruling, Feb 20, 2026")
     print("=" * 60)
 

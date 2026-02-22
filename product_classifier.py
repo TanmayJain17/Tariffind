@@ -1,10 +1,10 @@
 """
-Tariffind — AI Product Classifier
+TariffShield — AI Product Classifier
 =====================================
 Uses Claude (via Anthropic SDK) to classify products:
   Product name/URL → (HTS code, country of origin, product category)
 
-This is the "brain" of Tariffind and the core integration
+This is the "brain" of TariffShield and the core integration
 for the Claude Agent SDK sponsor prize.
 """
 
@@ -18,7 +18,7 @@ load_dotenv()
 # You'll need: pip install anthropic
 # Set ANTHROPIC_API_KEY env var or pass directly
 
-CLASSIFIER_SYSTEM_PROMPT = """You are a US trade compliance expert embedded in a consumer app called Tariffind.
+CLASSIFIER_SYSTEM_PROMPT = """You are a US trade compliance expert embedded in a consumer app called TariffShield.
 
 Given a product name, description, or URL, you must determine:
 1. The most likely HTS (Harmonized Tariff Schedule) code (10-digit format like 8528.72.64)
@@ -324,7 +324,7 @@ if __name__ == "__main__":
     ]
 
     print("=" * 55)
-    print("  Tariffind Product Classifier — Fallback Mode")
+    print("  TariffShield Product Classifier — Fallback Mode")
     print("=" * 55)
 
     for inp in test_inputs:
