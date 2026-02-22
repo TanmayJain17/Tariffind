@@ -368,9 +368,9 @@ Built at **Tech@NYU Startup Week 2026 Buildathon** hosted by HOF Capital.
 
 | Name | Role |
 |------|------|
-| Tanmay | Full Stack + AI Integration |
-| | |
-| | |
+| Tanmay Jain| Backend   |
+| Vedant Chawardol| Frontend|
+| Gaurav Kumar| AI Integration|
 
 ---
 
