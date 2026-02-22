@@ -1,11 +1,16 @@
 # Environment variables
 .env
 .env.*
-
-# Data directory
-data/
+!.env.example
+!**/.env.example
+!**/*.env.example
+!**/.env.*.example
 
 #vscode
 .vscode/
 
 venv/
+.venv/
+**/.venv/
+__pycache__/
+*.pyc
