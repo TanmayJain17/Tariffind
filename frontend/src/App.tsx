@@ -8,7 +8,7 @@ import { Navbar } from "@/components/Navbar";
 import Index from "./pages/Index";
 import Results from "./pages/Results";
 import Dashboard from "./pages/Dashboard";
-import CartAnalyzer from "./pages/CartAnalyzer";
+import CartAnalyzer from "./pages/Cartanalyzer";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
